@@ -6,27 +6,21 @@
 //
 
 import SwiftUI
-import SwiftData
 
 @main
 struct SideloaderApp: App {
-    var sharedModelContainer: ModelContainer = {
-        let schema = Schema([
-            Item.self,
-        ])
-        let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
-
-        do {
-            return try ModelContainer(for: schema, configurations: [modelConfiguration])
-        } catch {
-            fatalError("Could not create ModelContainer: \(error)")
-        }
-    }()
+    @State private var model = InstallerModel()
 
     var body: some Scene {
-        WindowGroup {
+        Window("Sideloader", id: "main") {
             ContentView()
+                .environment(model)
         }
-        .modelContainer(sharedModelContainer)
+        .windowResizability(.contentMinSize)
+
+        Settings {
+            SettingsView()
+                .environment(model)
+        }
     }
 }
