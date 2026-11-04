@@ -104,7 +104,7 @@ nonisolated struct LibIMobileDeviceInstaller: Installer {
 
         let remotePath = "\(Self.stagingDirectory)/\(package.bundleIdentifier).ipa"
         try upload(package.ipaURL, to: remotePath, session: session, cancellation: cancellation) { fraction in
-            progress(InstallProgress(fraction: fraction * 0.5, message: "Uploading \(package.ipaURL.lastPathComponent)…"))
+            progress(InstallProgress(fraction: fraction * 0.5, message: "Installing…"))
         }
 
         progress(InstallProgress(fraction: 0.5, message: "Installing…"))
@@ -122,8 +122,9 @@ nonisolated struct LibIMobileDeviceInstaller: Installer {
         defer { library.plistFree(options) }
         _ = library.plistDictSetItem(options, "CFBundleIdentifier", library.plistNewString(package.bundleIdentifier))
 
-        let operation = InstallOperation(library: library) { percent, status in
-            progress(InstallProgress(fraction: 0.5 + Double(percent) / 200, message: status))
+        // The device's own steps ("GeneratingApplicationMap"…) aren't shown: the log tracks the overall percentage.
+        let operation = InstallOperation(library: library) { percent in
+            progress(InstallProgress(fraction: 0.5 + Double(percent) / 200, message: "Installing…"))
         }
         let context = Unmanaged.passRetained(operation).toOpaque()
         let callback: LibIMobileDevice.StatusCallback = { _, status, context in
@@ -285,12 +286,12 @@ private nonisolated final class Session {
 /// Receives installation_proxy status callbacks on libimobiledevice's thread.
 private nonisolated final class InstallOperation: @unchecked Sendable {
     private let library: LibIMobileDevice
-    private let onStatus: (Int32, String) -> Void
+    private let onStatus: (Int32) -> Void
     private let done = DispatchSemaphore(value: 0)
     private let lock = NSLock()
     private var result: Result<Void, InstallerError>?
 
-    init(library: LibIMobileDevice, onStatus: @escaping (Int32, String) -> Void) {
+    init(library: LibIMobileDevice, onStatus: @escaping (Int32) -> Void) {
         self.library = library
         self.onStatus = onStatus
     }
@@ -317,7 +318,7 @@ private nonisolated final class InstallOperation: @unchecked Sendable {
         var percent: Int32 = -1
         library.instproxyStatusGetPercentComplete(status, &percent)
         if percent >= 0 {
-            onStatus(percent, Self.humanize(step))
+            onStatus(percent)
         }
     }
 
@@ -346,11 +347,6 @@ private nonisolated final class InstallOperation: @unchecked Sendable {
     }
 
     /// "InstallingEmbeddedProfile" → "Installing embedded profile"
-    private static func humanize(_ step: String) -> String {
-        guard !step.isEmpty else { return "Installing…" }
-        let words = step.replacing(/([a-z])([A-Z])/) { "\($0.1) \($0.2.lowercased())" }
-        return words + "…"
-    }
 }
 
 nonisolated final class CancellationFlag: @unchecked Sendable {

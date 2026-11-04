@@ -82,8 +82,43 @@ final class InstallerModel {
     var state: InstallState = .idle
     var log: [LogEntry] = []
 
+    // MARK: Library updates
+
+    /// Whether the bundled libimobiledevice libraries match the latest upstream and Homebrew versions.
+    enum LibraryHealth {
+        case checking
+        case upToDate
+        case outdated([String])
+        /// The last check couldn't reach GitHub or find Homebrew for every library.
+        case unknown
+    }
+
+    let libraryManifest = LibraryManifest.bundled()
+    private(set) var libraryUpdates: [LibraryUpdates.Status] = []
+    private(set) var isCheckingLibraryUpdates = false
+    private(set) var libraryUpdatesCheckedAt: Date?
+
+    var libraryHealth: LibraryHealth {
+        let outdated = libraryUpdates.filter { $0.isOutdated || $0.bundled == nil }.map(\.project)
+        if !outdated.isEmpty { return .outdated(outdated) }
+        if isCheckingLibraryUpdates || libraryUpdatesCheckedAt == nil { return .checking }
+        let allCompared = libraryUpdates.allSatisfy { $0.latest != nil || $0.homebrew != nil }
+        return allCompared && !libraryUpdates.isEmpty ? .upToDate : .unknown
+    }
+
+    func checkLibraryUpdates() async {
+        guard !isCheckingLibraryUpdates else { return }
+        isCheckingLibraryUpdates = true
+        libraryUpdates = await LibraryUpdates.check(manifest: libraryManifest)
+        libraryUpdatesCheckedAt = .now
+        isCheckingLibraryUpdates = false
+    }
+
     private var installTask: Task<Void, Never>?
     private var refreshGeneration = 0
+    /// The last progress milestone written to the log, in percent.
+    private var loggedPercent = 0
+    private static let logStep = 20
 
     var selectedDevice: Device? {
         devices.first { $0.id == selectedDeviceID }
@@ -148,12 +183,18 @@ final class InstallerModel {
     func install() {
         guard canInstall, let installer, let package, let device = selectedDevice else { return }
         state = .running(InstallProgress(fraction: nil, message: "Starting…"))
+        loggedPercent = 0
+        log.removeAll()
         append("Installing \(package.bundleIdentifier) on \(device.name) with \(installer.kind.title)")
 
         installTask = Task {
             do {
                 let summary = try await installer.install(package, on: device) { update in
                     Task { @MainActor in self.report(update) }
+                }
+                // The last progress update can stop short of 100% when the final step finishes quickly.
+                if loggedPercent > 0 {
+                    logMilestones(upTo: 100)
                 }
                 state = .succeeded(summary)
                 append(summary)
@@ -179,6 +220,17 @@ final class InstallerModel {
         state = .running(InstallProgress(fraction: fraction, message: update.message))
         if update.message != current.message {
             append(update.message)
+        }
+        if let fraction {
+            logMilestones(upTo: Int(fraction * 100))
+        }
+    }
+
+    /// Logs "Installing 20%", "Installing 40%"… for each step reached since the last one logged.
+    private func logMilestones(upTo percent: Int) {
+        while loggedPercent + Self.logStep <= percent {
+            loggedPercent += Self.logStep
+            append("Installing \(loggedPercent)%")
         }
     }
 

@@ -7,11 +7,8 @@ import SwiftUI
 
 struct SettingsView: View {
     @Environment(InstallerModel.self) private var model
-    @State private var updates: [LibraryUpdates.Status] = []
-    @State private var isChecking = false
-    @State private var lastChecked: Date?
 
-    private let manifest = LibraryManifest.bundled()
+    private var manifest: LibraryManifest? { model.libraryManifest }
     private static let updateCommand = "Scripts/update-libimobiledevice.sh"
 
     var body: some View {
@@ -63,7 +60,7 @@ struct SettingsView: View {
                             if let homebrew = status.homebrew {
                                 Text("· Homebrew \(homebrew)").foregroundStyle(.secondary)
                             }
-                            if lastChecked != nil {
+                            if model.libraryUpdatesCheckedAt != nil {
                                 Image(systemName: status.isOutdated ? "arrow.up.circle.fill" : "checkmark.circle.fill")
                                     .foregroundStyle(status.isOutdated ? .orange : .green)
                             }
@@ -88,18 +85,18 @@ struct SettingsView: View {
                 }
 
                 HStack {
-                    if let lastChecked {
+                    if let lastChecked = model.libraryUpdatesCheckedAt {
                         Text("Checked \(lastChecked.formatted(date: .omitted, time: .shortened))")
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
-                    if isChecking {
+                    if model.isCheckingLibraryUpdates {
                         ProgressView().controlSize(.small)
                     }
                     Button("Check for Updates") {
-                        Task { await checkForUpdates() }
+                        Task { await model.checkLibraryUpdates() }
                     }
-                    .disabled(isChecking)
+                    .disabled(model.isCheckingLibraryUpdates)
                 }
             } header: {
                 Text("libimobiledevice")
@@ -108,22 +105,15 @@ struct SettingsView: View {
         .formStyle(.grouped)
         .frame(width: 560)
         .fixedSize(horizontal: false, vertical: true)
-        .task { await checkForUpdates() }
+        .task { await model.checkLibraryUpdates() }
     }
 
     /// Bundled versions before the first check completes, then the full comparison.
     private var rows: [LibraryUpdates.Status] {
-        if !updates.isEmpty { return updates }
+        if !model.libraryUpdates.isEmpty { return model.libraryUpdates }
         return LibraryUpdates.projects.map {
             LibraryUpdates.Status(project: $0, bundled: manifest?.versions[$0], latest: nil, homebrew: nil)
         }
-    }
-
-    private func checkForUpdates() async {
-        isChecking = true
-        updates = await LibraryUpdates.check(manifest: manifest)
-        lastChecked = .now
-        isChecking = false
     }
 }
 

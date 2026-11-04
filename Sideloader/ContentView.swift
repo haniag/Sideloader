@@ -12,35 +12,44 @@ struct ContentView: View {
     @Environment(InstallerModel.self) private var model
     @State private var isImporting = false
     @State private var isDropTargeted = false
+    /// Width of the Install row's content, which the log lines up with.
+    @State private var rowWidth: CGFloat?
 
     private static let ipaType = UTType(filenameExtension: "ipa") ?? .data
 
     var body: some View {
         @Bindable var model = model
 
-        Form {
-            Section("App") {
-                PackageSection(isImporting: $isImporting)
-            }
+        VStack(spacing: 0) {
+            Form {
+                Section("App") {
+                    PackageSection(isImporting: $isImporting)
+                }
 
-            Section {
-                DeviceSection()
-            } header: {
-                HStack {
-                    Text("Device")
-                    Spacer()
-                    if model.isRefreshingDevices {
-                        ProgressView().controlSize(.small)
+                Section {
+                    DeviceSection()
+                } header: {
+                    HStack {
+                        Text("Device")
+                        Spacer()
+                        if model.isRefreshingDevices {
+                            ProgressView().controlSize(.small)
+                        }
                     }
                 }
-            }
 
-            Section("Install") {
-                InstallSection()
+                Section("Install") {
+                    InstallSection(rowWidth: $rowWidth)
+                }
             }
+            .formStyle(.grouped)
+            // The form never scrolls: it takes its content's height and the window grows to fit it.
+            .scrollDisabled(true)
+            .fixedSize(horizontal: false, vertical: true)
+
+            LogView(rowWidth: rowWidth)
         }
-        .formStyle(.grouped)
-        .frame(minWidth: 560, minHeight: 600)
+        .frame(minWidth: 560)
         .overlay {
             if isDropTargeted {
                 RoundedRectangle(cornerRadius: 12)
@@ -299,7 +308,7 @@ private struct DeviceWarnings: View {
 
 private struct InstallSection: View {
     @Environment(InstallerModel.self) private var model
-    @State private var showsLog = false
+    @Binding var rowWidth: CGFloat?
 
     var body: some View {
         HStack {
@@ -314,33 +323,11 @@ private struct InstallSection: View {
                     .disabled(!model.canInstall)
             }
         }
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { rowWidth = $0 }
 
-        if case .running(let progress) = model.state {
-            if let fraction = progress.fraction {
-                ProgressView(value: fraction)
-            } else {
-                ProgressView().progressViewStyle(.linear)
-            }
-        }
-
-        DisclosureGroup("Log", isExpanded: $showsLog) {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 2) {
-                        ForEach(model.log) { entry in
-                            Text("\(entry.date.formatted(date: .omitted, time: .standard))  \(entry.message)")
-                                .font(.caption.monospaced())
-                                .textSelection(.enabled)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .id(entry.id)
-                        }
-                    }
-                }
-                .frame(height: 140)
-                .onChange(of: model.log.last?.id) { _, id in
-                    if let id { proxy.scrollTo(id, anchor: .bottom) }
-                }
-            }
+        // Only installers that report a percentage (libimobiledevice) get a bar; devicectl reports none.
+        if case .running(let progress) = model.state, let fraction = progress.fraction {
+            ProgressView(value: fraction)
         }
     }
 
@@ -363,6 +350,107 @@ private struct InstallSection: View {
         if model.package == nil { return "Choose an app to install" }
         if model.selectedDevice == nil { return "Choose a device" }
         return "Ready to install with \(kind.title)"
+    }
+}
+
+// MARK: - Log
+
+/// Always-visible log under the form; it takes the window's remaining height and scrolls on its own.
+private struct LogView: View {
+    @Environment(InstallerModel.self) private var model
+    /// The form's row content width. The grouped form stops widening its sections past a maximum
+    /// and centers them, so the log matches that width (plus the rows' 10 pt inset) instead of the window's.
+    let rowWidth: CGFloat?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Log")
+                .font(.headline)
+                .padding(.leading, 10)
+
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 2) {
+                        ForEach(model.log) { entry in
+                            Text("\(entry.date.formatted(date: .omitted, time: .standard))  \(entry.message)")
+                                .font(.caption.monospaced())
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .id(entry.id)
+                        }
+                    }
+                    .padding(10)
+                }
+                .overlay {
+                    if model.log.isEmpty {
+                        Text("Nothing yet").foregroundStyle(.tertiary)
+                    }
+                }
+                .frame(maxWidth: .infinity, minHeight: 100, idealHeight: 160, maxHeight: .infinity)
+                .background(.quinary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .onChange(of: model.log.last?.id) { _, id in
+                    if let id { proxy.scrollTo(id, anchor: .bottom) }
+                }
+            }
+
+            if model.activeKind == .libimobiledevice {
+                HStack {
+                    Spacer()
+                    LibraryStatusBadge()
+                }
+            }
+        }
+        .frame(width: rowWidth.map { $0 + 20 })
+        .padding(.horizontal, rowWidth == nil ? 20 : 0)
+        .padding(.bottom, 20)
+    }
+}
+
+/// Shows whether the bundled libimobiledevice libraries are current, linking to Settings when they aren't.
+private struct LibraryStatusBadge: View {
+    @Environment(InstallerModel.self) private var model
+
+    var body: some View {
+        HStack(spacing: 6) {
+            switch model.libraryHealth {
+            case .checking:
+                ProgressView().controlSize(.mini)
+                Text("Checking libimobiledevice…").foregroundStyle(.secondary)
+            case .upToDate:
+                Label("libimobiledevice up to date", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+            case .outdated(let projects):
+                Label(projects.count == 1 ? "\(projects[0]) is out of date" : "\(projects.count) libraries are out of date",
+                      systemImage: "exclamationmark.circle.fill")
+                    .foregroundStyle(.red)
+                settingsLink
+            case .unknown:
+                Label("Couldn't check libimobiledevice for updates", systemImage: "questionmark.circle")
+                    .foregroundStyle(.secondary)
+                settingsLink
+            }
+        }
+        .font(.callout)
+        .help(helpText)
+        // Checked once per launch; Settings re-checks when opened.
+        .task {
+            if model.libraryUpdatesCheckedAt == nil { await model.checkLibraryUpdates() }
+        }
+    }
+
+    private var settingsLink: some View {
+        SettingsLink { Text("Details in Settings…") }
+            .buttonStyle(.link)
+    }
+
+    private var helpText: String {
+        model.libraryUpdates.map { status in
+            var line = "\(status.project): \(status.bundled ?? "not bundled")"
+            if let latest = status.latest { line += ", latest \(latest)" }
+            if let homebrew = status.homebrew { line += ", Homebrew \(homebrew)" }
+            return line
+        }
+        .joined(separator: "\n")
     }
 }
 
