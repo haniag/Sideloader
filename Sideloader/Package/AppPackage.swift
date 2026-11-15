@@ -31,11 +31,20 @@ nonisolated struct AppPackage: Identifiable, Sendable {
         try? FileManager.default.removeItem(at: workDirectory)
     }
 
+    /// Holds one folder per extracted .ipa.
+    private static var workRoot: URL {
+        FileManager.default.temporaryDirectory.appending(path: "Sideloader", directoryHint: .isDirectory)
+    }
+
+    /// Removes extractions left behind by earlier runs (a crash or force quit skips `cleanUp`).
+    /// Call at launch, before any package is loaded.
+    static func removeStaleWorkDirectories() {
+        try? FileManager.default.removeItem(at: workRoot)
+    }
+
     private static func extract(_ ipaURL: URL) throws -> AppPackage {
         let fileManager = FileManager.default
-        let workDirectory = fileManager.temporaryDirectory
-            .appending(path: "Sideloader", directoryHint: .isDirectory)
-            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        let workDirectory = workRoot.appending(path: UUID().uuidString, directoryHint: .isDirectory)
         try fileManager.createDirectory(at: workDirectory, withIntermediateDirectories: true)
 
         let ditto = Process()
@@ -115,7 +124,8 @@ nonisolated struct ProvisioningProfile: Sendable {
         case development = "Development"
         case adHoc = "Ad Hoc"
         case enterprise = "Enterprise"
-        case distribution = "Distribution"
+        /// No device list and not enterprise: only the App Store can deliver the app.
+        case appStore = "App Store"
     }
 
     let name: String
@@ -130,8 +140,23 @@ nonisolated struct ProvisioningProfile: Sendable {
     }
 
     func allows(udid: String) -> Bool {
-        kind == .enterprise || kind == .distribution
-            || provisionedDevices.contains { $0.caseInsensitiveCompare(udid) == .orderedSame }
+        switch kind {
+        case .enterprise: true
+        case .appStore: false
+        case .development, .adHoc:
+            provisionedDevices.contains { $0.caseInsensitiveCompare(udid) == .orderedSame }
+        }
+    }
+
+    /// Why iOS will refuse the app on every device, or nil when the profile itself is usable.
+    var problem: String? {
+        if kind == .appStore {
+            return "This app is signed for the App Store, so it can't be installed directly. Use a development, ad hoc or enterprise build."
+        }
+        if isExpired {
+            return "The provisioning profile has expired, so iOS will refuse this app. Re-sign it with a current profile."
+        }
+        return nil
     }
 
     init?(data: Data) {
@@ -165,7 +190,7 @@ nonisolated struct ProvisioningProfile: Sendable {
         } else if !devices.isEmpty {
             kind = .adHoc
         } else {
-            kind = .distribution
+            kind = .appStore
         }
     }
 }

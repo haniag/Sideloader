@@ -3,7 +3,7 @@
 //  Sideloader
 //
 
-import Foundation
+import AppKit
 import Observation
 
 @Observable
@@ -99,7 +99,7 @@ final class InstallerModel {
     private(set) var libraryUpdatesCheckedAt: Date?
 
     var libraryHealth: LibraryHealth {
-        let outdated = libraryUpdates.filter { $0.isOutdated || $0.bundled == nil }.map(\.project)
+        let outdated = libraryUpdates.filter { $0.isOutdated || $0.inUse == nil }.map(\.project)
         if !outdated.isEmpty { return .outdated(outdated) }
         if isCheckingLibraryUpdates || libraryUpdatesCheckedAt == nil { return .checking }
         let allCompared = libraryUpdates.allSatisfy { $0.latest != nil || $0.homebrew != nil }
@@ -109,9 +109,56 @@ final class InstallerModel {
     func checkLibraryUpdates() async {
         guard !isCheckingLibraryUpdates else { return }
         isCheckingLibraryUpdates = true
-        libraryUpdates = await LibraryUpdates.check(manifest: libraryManifest)
+        libraryUpdates = await LibraryUpdates.check(manifest: libraryManifest, usesHomebrew: usesHomebrewLibrary)
         libraryUpdatesCheckedAt = .now
         isCheckingLibraryUpdates = false
+    }
+
+    /// Whether the running app loaded Homebrew's libimobiledevice rather than the bundled copy.
+    var usesHomebrewLibrary: Bool { (try? libIMobileDevice.get())?.usesHomebrew ?? false }
+    let canUpdateLibraries = Homebrew.prefix != nil
+    private(set) var isUpdatingLibraries = false
+    private(set) var libraryUpdateMessage: String?
+    /// Set once Homebrew has newer libraries than the ones this process already loaded.
+    private(set) var libraryUpdateNeedsRelaunch = false
+
+    /// Installs or upgrades the libraries with Homebrew. They load at launch, so a change needs a relaunch.
+    func updateLibraries() async {
+        guard !isUpdatingLibraries else { return }
+        isUpdatingLibraries = true
+        defer { isUpdatingLibraries = false }
+        libraryUpdateMessage = "Asking Homebrew for updates…"
+        func versions() -> [String?] { LibraryUpdates.projects.map(LibraryUpdates.homebrewVersion(of:)) }
+        let before = versions()
+        do {
+            let output = try await Homebrew.update { line in
+                let line = line.trimmingCharacters(in: .whitespaces)
+                guard !line.isEmpty else { return }
+                Task { @MainActor in
+                    if self.isUpdatingLibraries { self.libraryUpdateMessage = line }
+                }
+            }
+            if output.status != 0 {
+                let last = output.text.split(whereSeparator: \.isNewline).last.map(String.init) ?? "exit \(output.status)"
+                libraryUpdateMessage = "Homebrew couldn't update: \(last)"
+            } else if versions() != before || !usesHomebrewLibrary {
+                libraryUpdateNeedsRelaunch = true
+                libraryUpdateMessage = "Updated. Relaunch Sideloader to use the new libraries."
+            } else {
+                libraryUpdateMessage = "Homebrew has nothing newer."
+            }
+        } catch {
+            libraryUpdateMessage = "Couldn't run Homebrew: \(error.localizedDescription)"
+        }
+        await checkLibraryUpdates()
+    }
+
+    func relaunch() {
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.createsNewApplicationInstance = true
+        NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: configuration) { _, _ in
+            Task { @MainActor in NSApp.terminate(nil) }
+        }
     }
 
     private var installTask: Task<Void, Never>?
@@ -131,6 +178,13 @@ final class InstallerModel {
     init() {
         let stored = UserDefaults.standard.string(forKey: "installerPreference")
         preference = stored.flatMap(InstallerPreference.init(rawValue:)) ?? .automatic
+
+        // Don't leave the extracted app in the temporary folder after quitting.
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.package?.cleanUp() }
+        }
     }
 
     // MARK: Actions

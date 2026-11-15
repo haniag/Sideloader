@@ -35,7 +35,8 @@ nonisolated final class LibIMobileDevice: @unchecked Sendable {
     typealias CString = UnsafeMutablePointer<CChar>
     typealias StatusCallback = @convention(c) (Handle?, Handle?, Handle?) -> Void
 
-    let manifest: LibraryManifest
+    /// Whether the libraries came from Homebrew rather than the copy in Contents/Frameworks.
+    let usesHomebrew: Bool
     let runtimeVersion: String?
 
     let getDeviceListExtended: @convention(c) (UnsafeMutablePointer<UnsafeMutablePointer<Handle?>?>, UnsafeMutablePointer<Int32>) -> Int32
@@ -81,15 +82,25 @@ nonisolated final class LibIMobileDevice: @unchecked Sendable {
     static let deviceErrorNoDevice: Int32 = -3
     static let afcWriteOnly: Int32 = 3
 
-    /// Loads the bundled libraries once; the result is cached for the app's lifetime.
+    /// Loads the libraries once; the result is cached for the app's lifetime.
     static let shared: Result<LibIMobileDevice, InstallerError> = load()
 
     private static func load() -> Result<LibIMobileDevice, InstallerError> {
+        // Homebrew's copy wins when it's installed, so `brew upgrade` is all an update takes.
+        // Macs without Homebrew fall back to the copy bundled in Contents/Frameworks.
+        if let prefix = Homebrew.prefix,
+           case .success(let library) = open(
+               imd: "\(prefix)/opt/libimobiledevice/lib/libimobiledevice-1.0.dylib",
+               plist: "\(prefix)/opt/libplist/lib/libplist-2.0.dylib",
+               usesHomebrew: true) {
+            return .success(library)
+        }
+
         guard let manifest = LibraryManifest.bundled(),
               let frameworks = Bundle.main.privateFrameworksURL
         else {
             return .failure(InstallerError(
-                "libimobiledevice isn't bundled with this build. Run Scripts/update-libimobiledevice.sh and rebuild."))
+                "libimobiledevice isn't installed with Homebrew or bundled with this build."))
         }
 
         let os = ProcessInfo.processInfo.operatingSystemVersion
@@ -100,19 +111,25 @@ nonisolated final class LibIMobileDevice: @unchecked Sendable {
                 "The bundled libimobiledevice needs macOS \(manifest.minimumMacOS) or later."))
         }
 
-        func open(_ file: String) -> Result<UnsafeMutableRawPointer, InstallerError> {
-            let path = frameworks.appending(path: file).path
+        return open(
+            imd: frameworks.appending(path: manifest.libimobiledeviceFile).path,
+            plist: frameworks.appending(path: manifest.libplistFile).path,
+            usesHomebrew: false)
+    }
+
+    private static func open(imd: String, plist: String, usesHomebrew: Bool) -> Result<LibIMobileDevice, InstallerError> {
+        func open(_ path: String) -> Result<UnsafeMutableRawPointer, InstallerError> {
             if let handle = dlopen(path, RTLD_NOW | RTLD_LOCAL) {
                 return .success(handle)
             }
             let reason = dlerror().map { String(cString: $0) } ?? "unknown error"
-            return .failure(InstallerError("Couldn't load \(file): \(reason)"))
+            return .failure(InstallerError("Couldn't load \(URL(filePath: path).lastPathComponent): \(reason)"))
         }
 
-        return open(manifest.libimobiledeviceFile).flatMap { imd in
-            open(manifest.libplistFile).flatMap { plist in
+        return open(imd).flatMap { imd in
+            open(plist).flatMap { plist in
                 do {
-                    return .success(try LibIMobileDevice(manifest: manifest, imd: imd, plist: plist))
+                    return .success(try LibIMobileDevice(usesHomebrew: usesHomebrew, imd: imd, plist: plist))
                 } catch let error as InstallerError {
                     return .failure(error)
                 } catch {
@@ -122,15 +139,15 @@ nonisolated final class LibIMobileDevice: @unchecked Sendable {
         }
     }
 
-    private init(manifest: LibraryManifest, imd: UnsafeMutableRawPointer, plist: UnsafeMutableRawPointer) throws {
+    private init(usesHomebrew: Bool, imd: UnsafeMutableRawPointer, plist: UnsafeMutableRawPointer) throws {
         func symbol<T>(_ handle: UnsafeMutableRawPointer, _ name: String) throws -> T {
             guard let pointer = dlsym(handle, name) else {
-                throw InstallerError("The bundled libimobiledevice is missing \(name). Refresh it with Scripts/update-libimobiledevice.sh.")
+                throw InstallerError("libimobiledevice is missing \(name). Update it in Settings.")
             }
             return unsafeBitCast(pointer, to: T.self)
         }
 
-        self.manifest = manifest
+        self.usesHomebrew = usesHomebrew
 
         getDeviceListExtended = try symbol(imd, "idevice_get_device_list_extended")
         deviceListExtendedFree = try symbol(imd, "idevice_device_list_extended_free")

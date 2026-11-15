@@ -7,6 +7,27 @@ import Foundation
 
 /// Compares the bundled libimobiledevice libraries with the latest upstream releases
 /// and with the copies in Homebrew, which Scripts/update-libimobiledevice.sh vendors from.
+/// The Homebrew installation the app loads libimobiledevice from and updates it with.
+nonisolated enum Homebrew {
+    static let prefix: String? = ["/opt/homebrew", "/usr/local"].first {
+        FileManager.default.isExecutableFile(atPath: "\($0)/bin/brew")
+    }
+
+    /// Installs the libraries, or upgrades the ones already installed, streaming brew's output.
+    static func update(onLine: @escaping @Sendable (String) -> Void) async throws -> ProcessRunner.Output {
+        guard let prefix else { throw InstallerError("Homebrew isn't installed.") }
+        return try await ProcessRunner.run(
+            URL(filePath: "\(prefix)/bin/brew"),
+            arguments: ["install"] + LibraryUpdates.projects,
+            environment: [
+                "PATH": "\(prefix)/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+                "HOMEBREW_NO_ENV_HINTS": "1",
+                "HOMEBREW_NO_INSTALL_CLEANUP": "1",
+            ],
+            onLine: onLine)
+    }
+}
+
 nonisolated enum LibraryUpdates {
     static let projects = ["libimobiledevice", "libimobiledevice-glue", "libusbmuxd", "libplist"]
 
@@ -15,18 +36,23 @@ nonisolated enum LibraryUpdates {
         let bundled: String?
         let latest: String?
         let homebrew: String?
+        /// Whether the app loaded Homebrew's copy instead of the bundled one.
+        let usesHomebrew: Bool
 
         var id: String { project }
 
+        /// The version the app is running with.
+        var inUse: String? { usesHomebrew ? homebrew : bundled }
+
         var isOutdated: Bool {
-            guard let bundled = bundled.map(upstreamVersion) else { return false }
+            guard let inUse = inUse.map(upstreamVersion) else { return false }
             return [latest, homebrew.map(upstreamVersion)]
                 .compactMap { $0 }
-                .contains { compare($0, bundled) == .orderedDescending }
+                .contains { compare($0, inUse) == .orderedDescending }
         }
     }
 
-    static func check(manifest: LibraryManifest?) async -> [Status] {
+    static func check(manifest: LibraryManifest?, usesHomebrew: Bool) async -> [Status] {
         await withTaskGroup(of: Status.self) { group in
             for project in projects {
                 group.addTask {
@@ -34,7 +60,8 @@ nonisolated enum LibraryUpdates {
                         project: project,
                         bundled: manifest?.versions[project],
                         latest: await latestTag(of: project),
-                        homebrew: homebrewVersion(of: project)
+                        homebrew: homebrewVersion(of: project),
+                        usesHomebrew: usesHomebrew
                     )
                 }
             }
@@ -65,7 +92,7 @@ nonisolated enum LibraryUpdates {
             .max { compare($0, $1) == .orderedAscending }
     }
 
-    private static func homebrewVersion(of project: String) -> String? {
+    static func homebrewVersion(of project: String) -> String? {
         for prefix in ["/opt/homebrew", "/usr/local"] {
             let link = "\(prefix)/opt/\(project)"
             if let resolved = try? FileManager.default.destinationOfSymbolicLink(atPath: link) {

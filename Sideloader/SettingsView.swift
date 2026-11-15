@@ -45,7 +45,9 @@ struct SettingsView: View {
                     Label("Available · USB", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
                 }
 
-                if let manifest {
+                LabeledContent("Loaded from", value: model.usesHomebrewLibrary ? "Homebrew" : "App bundle")
+
+                if let manifest, !model.usesHomebrewLibrary {
                     LabeledContent("Bundled", value: manifest.updated.formatted(dateString: manifest.updated))
                     LabeledContent("Built for", value: "\(manifest.architectures), macOS \(manifest.minimumMacOS)+")
                 }
@@ -53,11 +55,13 @@ struct SettingsView: View {
                 ForEach(rows) { status in
                     LabeledContent(status.project) {
                         HStack(spacing: 6) {
-                            Text(status.bundled ?? "not bundled")
+                            Text(status.inUse ?? "not installed")
                             if let latest = status.latest {
                                 Text("· latest \(latest)").foregroundStyle(.secondary)
                             }
-                            if let homebrew = status.homebrew {
+                            if status.usesHomebrew, let bundled = status.bundled {
+                                Text("· bundled \(bundled)").foregroundStyle(.secondary)
+                            } else if !status.usesHomebrew, let homebrew = status.homebrew {
                                 Text("· Homebrew \(homebrew)").foregroundStyle(.secondary)
                             }
                             if model.libraryUpdatesCheckedAt != nil {
@@ -69,9 +73,27 @@ struct SettingsView: View {
                     }
                 }
 
-                if rows.contains(where: \.isOutdated) {
+                if model.canUpdateLibraries {
+                    HStack {
+                        if model.isUpdatingLibraries {
+                            ProgressView().controlSize(.small)
+                        }
+                        if let message = model.libraryUpdateMessage {
+                            Text(message).font(.callout).foregroundStyle(.secondary).lineLimit(2)
+                        }
+                        Spacer()
+                        if model.libraryUpdateNeedsRelaunch {
+                            Button("Relaunch") { model.relaunch() }
+                        } else {
+                            Button("Update with Homebrew") {
+                                Task { await model.updateLibraries() }
+                            }
+                            .disabled(model.isUpdatingLibraries || model.state.isRunning)
+                        }
+                    }
+                } else if rows.contains(where: \.isOutdated) {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("A newer version is available. In the Sideloader project folder, run the following, then rebuild the app:")
+                        Text("A newer version is available. Install Homebrew to update here, or in the Sideloader project folder run the following, then rebuild the app:")
                         HStack {
                             Text(Self.updateCommand).font(.callout.monospaced()).textSelection(.enabled)
                             Button("Copy") {
@@ -112,7 +134,8 @@ struct SettingsView: View {
     private var rows: [LibraryUpdates.Status] {
         if !model.libraryUpdates.isEmpty { return model.libraryUpdates }
         return LibraryUpdates.projects.map {
-            LibraryUpdates.Status(project: $0, bundled: manifest?.versions[$0], latest: nil, homebrew: nil)
+            LibraryUpdates.Status(project: $0, bundled: manifest?.versions[$0], latest: nil, homebrew: nil,
+                                  usesHomebrew: model.usesHomebrewLibrary)
         }
     }
 }

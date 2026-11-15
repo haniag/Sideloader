@@ -144,6 +144,8 @@ nonisolated struct DeviceCtlInstaller: Installer {
         let legacy = json["deviceProperties"] as? [String: Any] ?? [:]
 
         guard (hardware["reality"] as? String ?? "physical") == "physical" else { return nil }
+        // An .ipa only installs on iPhones and iPads (both report "iOS"), not on a paired Watch, TV or Vision Pro.
+        guard (hardware["platform"] as? String ?? "iOS") == "iOS" else { return nil }
 
         let osVersion = (software["osVersionNumber"] as? [String: Any])?["stringValue"] as? String
             ?? legacy["osVersionNumber"] as? String
@@ -159,6 +161,15 @@ nonisolated struct DeviceCtlInstaller: Installer {
         default: .unknown
         }
         let paired = (connection["pairingState"] as? String).map { $0 == "paired" } ?? true
+        // devicectl also lists devices it remembers but can't reach right now.
+        let reachable = connection["tunnelState"] as? String != "unavailable"
+        let problem: String? = if !paired {
+            "Not paired with this Mac. Connect it with a cable and tap Trust."
+        } else if !reachable {
+            "Not connected. Connect it with a cable, or unlock it on the same Wi-Fi network."
+        } else {
+            nil
+        }
 
         return Device(
             id: identifier,
@@ -168,7 +179,7 @@ nonisolated struct DeviceCtlInstaller: Installer {
             osVersion: osVersion,
             connection: transport,
             developerModeEnabled: developerMode,
-            problem: paired ? nil : "Not paired with this Mac. Connect it with a cable and tap Trust."
+            problem: problem
         )
     }
 

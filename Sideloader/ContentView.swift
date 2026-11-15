@@ -131,6 +131,9 @@ private struct PackageSection: View {
 
             if let profile = package.profile {
                 ProfileRow(profile: profile)
+                if let problem = profile.problem {
+                    Label(problem, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+                }
             } else {
                 Label("No embedded provisioning profile. The device may refuse this app.", systemImage: "exclamationmark.triangle")
                     .foregroundStyle(.orange)
@@ -291,7 +294,14 @@ private struct DeviceWarnings: View {
                   systemImage: "hammer")
                 .foregroundStyle(.orange)
         }
-        if let profile = model.package?.profile, !profile.allows(udid: device.udid) {
+        if let minimum = model.package?.minimumOSVersion, let installed = device.osVersion,
+           installed.compare(minimum, options: .numeric) == .orderedAscending {
+            Label("This app needs iOS \(minimum) or later; \(device.name) has iOS \(installed).",
+                  systemImage: "arrow.up.circle")
+                .foregroundStyle(.orange)
+        }
+        // An App Store profile fails on every device; the App section already says so.
+        if let profile = model.package?.profile, profile.kind != .appStore, !profile.allows(udid: device.udid) {
             Label("This device (\(device.udid)) isn't in the app's provisioning profile, so iOS will refuse it.",
                   systemImage: "person.crop.circle.badge.xmark")
                 .foregroundStyle(.orange)
@@ -445,9 +455,10 @@ private struct LibraryStatusBadge: View {
 
     private var helpText: String {
         model.libraryUpdates.map { status in
-            var line = "\(status.project): \(status.bundled ?? "not bundled")"
+            var line = "\(status.project): \(status.inUse ?? "not installed")"
+            if status.usesHomebrew { line += " (Homebrew)" }
             if let latest = status.latest { line += ", latest \(latest)" }
-            if let homebrew = status.homebrew { line += ", Homebrew \(homebrew)" }
+            if !status.usesHomebrew, let homebrew = status.homebrew { line += ", Homebrew \(homebrew)" }
             return line
         }
         .joined(separator: "\n")

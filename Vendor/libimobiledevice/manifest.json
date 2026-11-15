@@ -1,5 +1,5 @@
 {
-  "updated": "2026-11-02T21:53:34Z",
+  "updated": "2026-11-15T14:37:17Z",
   "libimobiledeviceFile": "libimobiledevice-1.0.6.dylib",
   "libplistFile": "libplist-2.0.12.dylib",
   "minimumMacOS": "26.0",
@@ -7,7 +7,7 @@
   "versions": {
     "libimobiledevice": "1.4.0_2",
     "libimobiledevice-glue": "1.3.3",
-    "libplist": "2.8.0",
+    "libplist": "2.8.1",
     "libusbmuxd": "2.1.1_1",
     "openssl@4": "4.0.3"
   }

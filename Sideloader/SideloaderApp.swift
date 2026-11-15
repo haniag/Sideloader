@@ -11,6 +11,10 @@ import SwiftUI
 struct SideloaderApp: App {
     @State private var model = InstallerModel()
 
+    init() {
+        AppPackage.removeStaleWorkDirectories()
+    }
+
     var body: some Scene {
         Window("Sideloader", id: "main") {
             ContentView()
